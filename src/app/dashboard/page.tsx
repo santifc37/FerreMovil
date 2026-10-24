@@ -1,25 +1,21 @@
+
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Producto = {
-  id: number;
+  producto_id: string;
   nombre: string;
   codigo: string;
-  precio: number;
-  stock: number;
+  codigo_barras: string | null;
+  precio_venta: number;
+  stock_actual: number;
+  unidad_base_id: string;
 };
 
 type ItemCarrito = Producto & {
   cantidad: number;
 };
-
-const productosIniciales: Producto[] = [
-  { id: 1, nombre: "Martillo de uña", codigo: "77010001", precio: 25000, stock: 12 },
-  { id: 2, nombre: "Destornillador estrella", codigo: "77010002", precio: 8500, stock: 20 },
-  { id: 3, nombre: "Cinta aislante", codigo: "77010003", precio: 4500, stock: 35 },
-  { id: 4, nombre: "Tornillo 2 pulgadas", codigo: "77010004", precio: 300, stock: 150 },
-];
 
 const moneda = new Intl.NumberFormat("es-CO", {
   style: "currency",
@@ -28,50 +24,119 @@ const moneda = new Intl.NumberFormat("es-CO", {
 });
 
 export default function DashboardPage() {
-  const [productos] = useState(productosIniciales);
+  const [productos, setProductos] = useState<Producto[]>([]);
   const [busqueda, setBusqueda] = useState("");
   const [carrito, setCarrito] = useState<ItemCarrito[]>([]);
+  const [cargando, setCargando] = useState(true);
+  const [registrando, setRegistrando] = useState(false);
   const [mensaje, setMensaje] = useState("");
+  const [error, setError] = useState("");
+
+  const cargarProductos = useCallback(async (signal?: AbortSignal) => {
+    setError("");
+
+    try {
+      const respuesta = await fetch("/api/inventario/stock?activo=true", {
+        credentials: "include",
+        cache: "no-store",
+        signal,
+      });
+
+      const datos = await respuesta.json();
+
+      if (!respuesta.ok) {
+        throw new Error(
+          datos.error || "No se pudo cargar el inventario."
+        );
+      }
+
+      setProductos(datos.productos ?? []);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Error al cargar el inventario."
+      );
+    } finally {
+      if (!signal?.aborted) {
+        setCargando(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void cargarProductos(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [cargarProductos]);
 
   const resultados = useMemo(() => {
     const termino = busqueda.trim().toLowerCase();
-    if (!termino) return [];
 
-    return productos.filter(
-      (producto) =>
-        producto.nombre.toLowerCase().includes(termino) ||
-        producto.codigo.toLowerCase().includes(termino)
-    );
-  }, [busqueda, productos]);
+    if (!termino) {
+      return productos;
+    }
 
-  const totalUnidades = carrito.reduce((total, item) => total + item.cantidad, 0);
+    return productos.filter((producto) => {
+      const nombre = (producto.nombre ?? "").toLowerCase();
+      const codigo = (producto.codigo ?? "").toLowerCase();
+      const barras = producto.codigo_barras ?? "";
+
+      return (
+        nombre.includes(termino) ||
+        codigo.includes(termino) ||
+        barras.includes(termino)
+      );
+    });
+  }, [productos, busqueda]);
+
+  const totalUnidades = carrito.reduce(
+    (total, item) => total + item.cantidad,
+    0
+  );
+
   const totalVenta = carrito.reduce(
-    (total, item) => total + item.precio * item.cantidad,
+    (total, item) => total + item.precio_venta * item.cantidad,
     0
   );
 
   function agregarProducto(producto: Producto) {
     setMensaje("");
+    setError("");
+
+    const existente = carrito.find(
+      (item) => item.producto_id === producto.producto_id
+    );
+
+    if (producto.stock_actual <= 0) {
+      setMensaje("Este producto no tiene existencias.");
+      return;
+    }
+
+    if (existente && existente.cantidad >= producto.stock_actual) {
+      setMensaje("No hay suficientes existencias.");
+      return;
+    }
 
     setCarrito((actual) => {
-      const existente = actual.find((item) => item.id === producto.id);
+      const item = actual.find(
+        (i) => i.producto_id === producto.producto_id
+      );
 
-      if (existente) {
-        if (existente.cantidad >= producto.stock) {
-          setMensaje("No puedes superar las existencias disponibles.");
-          return actual;
-        }
-
-        return actual.map((item) =>
-          item.id === producto.id
-            ? { ...item, cantidad: item.cantidad + 1 }
-            : item
+      if (item) {
+        return actual.map((i) =>
+          i.producto_id === producto.producto_id
+            ? { ...i, cantidad: i.cantidad + 1 }
+            : i
         );
-      }
-
-      if (producto.stock <= 0) {
-        setMensaje("Este producto no tiene existencias.");
-        return actual;
       }
 
       return [...actual, { ...producto, cantidad: 1 }];
@@ -80,27 +145,73 @@ export default function DashboardPage() {
     setBusqueda("");
   }
 
-  function cambiarCantidad(id: number, cambio: number) {
-    setMensaje("");
-
+  function cambiarCantidad(productoId: string, cambio: number) {
     setCarrito((actual) =>
       actual
-        .map((item) => {
-          if (item.id !== id) return item;
-
-          return {
-            ...item,
-            cantidad: Math.min(item.stock, item.cantidad + cambio),
-          };
-        })
+        .map((item) =>
+          item.producto_id === productoId
+            ? {
+                ...item,
+                cantidad: Math.min(
+                  item.stock_actual,
+                  item.cantidad + cambio
+                ),
+              }
+            : item
+        )
         .filter((item) => item.cantidad > 0)
     );
   }
 
-  function registrarVenta() {
-    setMensaje(
-      "Interfaz de prueba: todavía no se ha registrado ninguna venta."
-    );
+  async function registrarVenta() {
+    if (carrito.length === 0 || registrando) {
+      return;
+    }
+
+    setRegistrando(true);
+    setMensaje("");
+    setError("");
+
+    try {
+      const respuesta = await fetch("/api/ventas", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({
+          items: carrito.map((item) => ({
+            producto_id: item.producto_id,
+            cantidad: item.cantidad,
+            unidad_id: item.unidad_base_id,
+            precio_unitario: item.precio_venta,
+          })),
+        }),
+      });
+
+      const datos = await respuesta.json();
+
+      if (!respuesta.ok) {
+        throw new Error(
+          datos.error || "No se pudo registrar la venta."
+        );
+      }
+
+      setCarrito([]);
+      setBusqueda("");
+      setMensaje("Venta registrada correctamente.");
+
+      await cargarProductos();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Error al registrar la venta."
+      );
+    } finally {
+      setRegistrando(false);
+    }
   }
 
   return (
@@ -113,95 +224,69 @@ export default function DashboardPage() {
             Busca los productos y agrégalos a la venta.
           </p>
         </div>
-        <div className="ventas-icono" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <path
-              d="M3 4h2l2.2 10.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H6"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <circle cx="10" cy="20" r="1.2" fill="currentColor" />
-            <circle cx="18" cy="20" r="1.2" fill="currentColor" />
-          </svg>
-        </div>
       </header>
 
       <section className="buscador-seccion">
         <label htmlFor="buscar-producto">Buscar producto</label>
+
         <div className="buscador-campo">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
-            <path d="m16 16 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
           <input
             id="buscar-producto"
             value={busqueda}
-            onChange={(event) => setBusqueda(event.target.value)}
-            placeholder="Nombre o código de barras"
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Nombre, código o código de barras"
             autoComplete="off"
           />
-          {busqueda && (
-            <button
-              className="limpiar-busqueda"
-              onClick={() => setBusqueda("")}
-              aria-label="Limpiar búsqueda"
-            >
-              ×
-            </button>
-          )}
         </div>
 
-        <button
-          type="button"
-          className="escanear-boton"
-          onClick={() =>
-            setMensaje("El escáner con cámara se implementará en el siguiente paso.")
-          }
-        >
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M4 8V5h4M16 5h4v3M20 16v3h-4M8 19H4v-3M4 12h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          Escanear código
-        </button>
+        {cargando && <p>Cargando inventario...</p>}
 
-        {busqueda && (
+        {error && (
+          <div role="alert">
+            <p>{error}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setCargando(true);
+                void cargarProductos();
+              }}
+            >
+              Reintentar
+            </button>
+          </div>
+        )}
+
+        {!cargando && !error && (
           <div className="resultados-productos">
-            {resultados.length > 0 ? (
-              resultados.map((producto) => (
-                <button
-                  type="button"
-                  className="resultado-producto"
-                  key={producto.id}
-                  onClick={() => agregarProducto(producto)}
-                >
-                  <span className="producto-mini-icono" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none">
-                      <path d="m4 7 8-4 8 4v10l-8 4-8-4V7Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                      <path d="m4 7 8 4 8-4M12 11v10" stroke="currentColor" strokeWidth="1.6" />
-                    </svg>
-                  </span>
-                  <span className="resultado-info">
-                    <strong>{producto.nombre}</strong>
-                    <small>Código: {producto.codigo} · Stock: {producto.stock}</small>
-                  </span>
-                  <span className="resultado-precio">{moneda.format(producto.precio)}</span>
-                  <span className="agregar-signo">+</span>
-                </button>
-              ))
-            ) : (
-              <div className="sin-resultados">
-                <p>No se encontró el producto.</p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setMensaje("La creación de productos se implementará en el siguiente paso.")
-                  }
-                >
-                  + Crear producto
-                </button>
-              </div>
+            {resultados.map((producto) => (
+              <button
+                type="button"
+                className="resultado-producto"
+                key={producto.producto_id}
+                onClick={() => agregarProducto(producto)}
+              >
+                <span className="resultado-info">
+                  <strong>{producto.nombre}</strong>
+                  <small>
+                    Código: {producto.codigo} · Stock:{" "}
+                    {producto.stock_actual}
+                  </small>
+                </span>
+
+                <span className="resultado-precio">
+                  {moneda.format(producto.precio_venta)}
+                </span>
+
+                <span>+</span>
+              </button>
+            ))}
+
+            {resultados.length === 0 && (
+              <p>
+                {busqueda.trim()
+                  ? "No se encontró el producto."
+                  : "No hay productos registrados."}
+              </p>
             )}
           </div>
         )}
@@ -213,52 +298,54 @@ export default function DashboardPage() {
             <h2>Productos de la venta</h2>
             <p>Revisa las cantidades antes de continuar.</p>
           </div>
+
           <span className="contador-items">{totalUnidades} uds.</span>
         </div>
 
         {carrito.length === 0 ? (
           <div className="carrito-vacio">
-            <div className="carrito-vacio-icono">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M3 4h2l2.2 10.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-                <circle cx="10" cy="20" r="1.2" fill="currentColor" />
-                <circle cx="18" cy="20" r="1.2" fill="currentColor" />
-              </svg>
-            </div>
             <strong>Tu venta está vacía</strong>
-            <p>Busca un producto arriba para comenzar.</p>
+            <p>Busca un producto para comenzar.</p>
           </div>
         ) : (
           <div className="lista-carrito">
             {carrito.map((item) => (
-              <article className="carrito-item" key={item.id}>
-                <div className="producto-mini-icono" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none">
-                    <path d="m4 7 8-4 8 4v10l-8 4-8-4V7Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                    <path d="m4 7 8 4 8-4M12 11v10" stroke="currentColor" strokeWidth="1.6" />
-                  </svg>
-                </div>
+              <article
+                className="carrito-item"
+                key={item.producto_id}
+              >
                 <div className="carrito-item-info">
                   <strong>{item.nombre}</strong>
-                  <small>{moneda.format(item.precio)} / unidad</small>
+                  <small>
+                    {moneda.format(item.precio_venta)} / unidad
+                  </small>
                   <span className="carrito-subtotal">
-                    {moneda.format(item.precio * item.cantidad)}
+                    {moneda.format(
+                      item.precio_venta * item.cantidad
+                    )}
                   </span>
                 </div>
+
                 <div className="cantidad-control">
                   <button
                     type="button"
-                    onClick={() => cambiarCantidad(item.id, -1)}
-                    aria-label={`Disminuir ${item.nombre}`}
+                    aria-label={`Restar una unidad de ${item.nombre}`}
+                    onClick={() =>
+                      cambiarCantidad(item.producto_id, -1)
+                    }
                   >
                     −
                   </button>
+
                   <span>{item.cantidad}</span>
+
                   <button
                     type="button"
-                    disabled={item.cantidad >= item.stock}
-                    onClick={() => cambiarCantidad(item.id, 1)}
-                    aria-label={`Aumentar ${item.nombre}`}
+                    aria-label={`Agregar una unidad de ${item.nombre}`}
+                    disabled={item.cantidad >= item.stock_actual}
+                    onClick={() =>
+                      cambiarCantidad(item.producto_id, 1)
+                    }
                   >
                     +
                   </button>
@@ -274,27 +361,37 @@ export default function DashboardPage() {
           <span>Productos diferentes</span>
           <span>{carrito.length}</span>
         </div>
+
         <div className="resumen-linea">
           <span>Unidades totales</span>
           <span>{totalUnidades}</span>
         </div>
+
         <div className="resumen-total">
           <span>Total de la venta</span>
           <strong>{moneda.format(totalVenta)}</strong>
         </div>
+
         <button
           type="button"
           className="registrar-boton"
-          disabled={carrito.length === 0}
-          onClick={registrarVenta}
+          disabled={carrito.length === 0 || registrando}
+          onClick={() => void registrarVenta()}
         >
-          Registrar venta
-          <span aria-hidden="true">→</span>
+          {registrando ? "Registrando..." : "Registrar venta"}
         </button>
-        {mensaje && <p className="mensaje-venta" role="status">{mensaje}</p>}
-        <p className="nota-prueba">
-          Los datos actuales son de demostración; no se guardan ventas reales.
-        </p>
+
+        {mensaje && (
+          <p className="mensaje-venta" role="status">
+            {mensaje}
+          </p>
+        )}
+
+        {error && (
+          <p className="mensaje-venta" role="alert">
+            {error}
+          </p>
+        )}
       </section>
     </main>
   );
