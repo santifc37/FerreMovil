@@ -370,6 +370,9 @@ export default function ProductosPage() {
         <FormularioProducto
           producto={editando === "nuevo" ? null : editando}
           codigoInicial={codigoNuevo}
+          stockActual={
+            editando !== "nuevo" && stock ? (stock[editando.id] ?? 0) : null
+          }
           categorias={categorias}
           unidades={unidades}
           existentes={productos}

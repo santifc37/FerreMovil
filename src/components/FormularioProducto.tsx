@@ -25,6 +25,8 @@ type Props = {
   producto: ProductoCatalogo | null;
   /** Código escaneado que llena el código interno y el de barras. */
   codigoInicial?: string;
+  /** Existencias actuales (solo al editar), para mostrarlas junto al campo. */
+  stockActual?: number | null;
   categorias: Categoria[];
   unidades: Unidad[];
   existentes: ProductoExistente[];
@@ -84,6 +86,7 @@ function datosNuevos(unidades: Unidad[], codigoInicial?: string): Datos {
 export default function FormularioProducto({
   producto,
   codigoInicial,
+  stockActual = null,
   categorias,
   unidades,
   existentes,
@@ -231,10 +234,40 @@ export default function FormularioProducto({
       stock_minimo: stockMinimo,
     };
 
+    // Las existencias siempre cambian con una entrada de inventario,
+    // nunca modificando el stock directamente.
+    function registrarEntrada(productoId: string, motivo: string) {
+      return api("/inventario/entradas", {
+        metodo: "POST",
+        cuerpo: {
+          motivo,
+          items: [
+            {
+              producto_id: productoId,
+              unidad_id: datos.unidad_base_id,
+              cantidad: inicial,
+            },
+          ],
+        },
+      });
+    }
+
     try {
       if (producto) {
         await api(`/productos/${producto.id}`, { metodo: "PATCH", cuerpo });
-        onGuardado({ id: producto.id, aviso: `Se actualizó "${nombre}".` });
+
+        let aviso = `Se actualizó "${nombre}".`;
+
+        if (inicial > 0) {
+          try {
+            await registrarEntrada(producto.id, "Entrada de mercancía");
+            aviso = `Se actualizó "${nombre}" y se agregaron ${formatoCantidad.format(inicial)} al stock.`;
+          } catch (err) {
+            aviso = `Se actualizó "${nombre}", pero no se pudo agregar el stock: ${mensajeDeError(err, "error desconocido")}`;
+          }
+        }
+
+        onGuardado({ id: producto.id, aviso });
         return;
       }
 
@@ -247,19 +280,7 @@ export default function FormularioProducto({
 
       if (inicial > 0) {
         try {
-          await api("/inventario/entradas", {
-            metodo: "POST",
-            cuerpo: {
-              motivo: "Inventario inicial",
-              items: [
-                {
-                  producto_id: creado.id,
-                  unidad_id: datos.unidad_base_id,
-                  cantidad: inicial,
-                },
-              ],
-            },
-          });
+          await registrarEntrada(creado.id, "Inventario inicial");
           aviso = `Se registró "${nombre}" con ${formatoCantidad.format(inicial)} en inventario.`;
         } catch (err) {
           aviso = `Se registró "${nombre}", pero no se pudo guardar la cantidad inicial: ${mensajeDeError(err, "error desconocido")}`;
@@ -455,17 +476,23 @@ export default function FormularioProducto({
               />
             </label>
 
-            {esNuevo && (
-              <label className="fm-campo">
-                Cantidad que tienes ahora
-                <input
-                  value={datos.cantidad_inicial}
-                  onChange={(e) => cambiar("cantidad_inicial", e.target.value)}
-                  placeholder="Opcional"
-                  inputMode="decimal"
-                />
-              </label>
-            )}
+            <label className="fm-campo">
+              {esNuevo ? "Cantidad que tienes ahora" : "Agregar al stock"}
+              <input
+                value={datos.cantidad_inicial}
+                onChange={(e) => cambiar("cantidad_inicial", e.target.value)}
+                placeholder={esNuevo ? "Opcional" : "Cantidad que entra"}
+                inputMode="decimal"
+              />
+              {!esNuevo && (
+                <small className="fm-nota">
+                  {stockActual !== null
+                    ? `Stock actual: ${formatoCantidad.format(stockActual)}. `
+                    : ""}
+                  Lo que escribas se suma al stock actual.
+                </small>
+              )}
+            </label>
           </div>
 
           <label className="fm-campo">
