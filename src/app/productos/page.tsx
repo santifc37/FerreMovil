@@ -14,9 +14,11 @@ import {
 } from "@/lib/api";
 import { cantidad as formatoCantidad, moneda } from "@/lib/formato";
 
+// La vista de stock puede nombrar el identificador de distintas maneras.
 type FilaStock = {
-  producto_id: string;
-  stock_actual: number;
+  producto_id?: string;
+  id?: string;
+  stock_actual?: number | string | null;
 };
 
 export default function ProductosPage() {
@@ -74,10 +76,11 @@ export default function ProductosPage() {
       setStock(
         listaStock
           ? Object.fromEntries(
-              listaStock.productos.map((fila) => [
-                fila.producto_id,
-                Number(fila.stock_actual),
-              ])
+              (listaStock.productos ?? []).flatMap((fila) => {
+                const id = fila.producto_id ?? fila.id;
+
+                return id ? [[id, Number(fila.stock_actual ?? 0)]] : [];
+              })
             )
           : null
       );

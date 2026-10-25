@@ -12,6 +12,7 @@ import {
   leerNumero,
   mensajeDeError,
   nuevaClave,
+  type ProductoCatalogo,
   type Unidad,
 } from "@/lib/api";
 import { cantidad as formatoCantidad, moneda } from "@/lib/formato";
@@ -31,6 +32,15 @@ type ItemCarrito = Producto & {
 };
 
 type EstadoEscaner = { tipo: "ok" | "error"; texto: string } | null;
+
+// La vista de stock puede nombrar el identificador de distintas maneras.
+type FilaStock = {
+  producto_id?: string;
+  id?: string;
+  stock_actual?: number | string | null;
+};
+
+const MAX_RESULTADOS = 20;
 
 function redondear(valor: number): number {
   return Math.round(valor * 1000) / 1000;
@@ -60,15 +70,33 @@ export default function DashboardPage() {
   const cargarProductos = useCallback(
     async (signal?: AbortSignal): Promise<Producto[] | null> => {
       try {
-        const datos = await api<{ productos?: Producto[] }>(
-          "/inventario/stock?activo=true",
-          { signal }
-        );
+        // El nombre, código y precio salen del catálogo de productos; de la
+        // vista de stock solo tomamos las existencias.
+        const [catalogo, existencias] = await Promise.all([
+          api<ProductoCatalogo[]>("/productos?activo=true", { signal }),
+          api<{ productos?: FilaStock[] }>("/inventario/stock?activo=true", {
+            signal,
+          }),
+        ]);
 
-        const lista = (datos.productos ?? []).map((p) => ({
-          ...p,
+        const stockPorId = new Map<string, number>();
+
+        for (const fila of existencias.productos ?? []) {
+          const id = fila.producto_id ?? fila.id;
+
+          if (id) {
+            stockPorId.set(id, Number(fila.stock_actual ?? 0));
+          }
+        }
+
+        const lista: Producto[] = catalogo.map((p) => ({
+          producto_id: p.id,
+          nombre: p.nombre,
+          codigo: p.codigo,
+          codigo_barras: p.codigo_barras,
           precio_venta: Number(p.precio_venta),
-          stock_actual: Number(p.stock_actual),
+          stock_actual: stockPorId.get(p.id) ?? 0,
+          unidad_base_id: p.unidad_base_id,
         }));
 
         setProductos(lista);
@@ -102,11 +130,14 @@ export default function DashboardPage() {
     };
   }, [cargarProductos]);
 
-  const resultados = useMemo(() => {
+  const hayBusqueda = busqueda.trim().length > 0;
+
+  // La lista solo aparece cuando se escribe algo en el buscador.
+  const coincidencias = useMemo(() => {
     const termino = busqueda.trim().toLowerCase();
 
     if (!termino) {
-      return productos;
+      return [];
     }
 
     return productos.filter((producto) => {
@@ -409,9 +440,15 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {!cargando && !error && (
+        {!cargando && !error && productos.length === 0 && (
+          <div className="sin-resultados">
+            <p>No hay productos registrados.</p>
+          </div>
+        )}
+
+        {!cargando && !error && hayBusqueda && (
           <div className="resultados-productos">
-            {resultados.map((producto) => (
+            {coincidencias.slice(0, MAX_RESULTADOS).map((producto) => (
               <button
                 type="button"
                 className="resultado-producto"
@@ -434,13 +471,18 @@ export default function DashboardPage() {
               </button>
             ))}
 
-            {resultados.length === 0 && (
+            {coincidencias.length > MAX_RESULTADOS && (
               <div className="sin-resultados">
                 <p>
-                  {busqueda.trim()
-                    ? "No se encontró el producto."
-                    : "No hay productos registrados."}
+                  Hay {coincidencias.length} coincidencias. Sigue escribiendo
+                  para acotar la búsqueda.
                 </p>
+              </div>
+            )}
+
+            {coincidencias.length === 0 && (
+              <div className="sin-resultados">
+                <p>No se encontró el producto.</p>
               </div>
             )}
           </div>

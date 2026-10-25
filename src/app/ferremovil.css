@@ -506,6 +506,18 @@
 
 /* ---------- Pantalla de venta: cantidades y avisos ---------- */
 
+/* Los resultados de búsqueda son botones y el estilo global de `button` pone
+   el texto en blanco: el nombre y el precio quedaban blanco sobre blanco. */
+.resultado-producto {
+  min-height: 0;
+  margin: 0;
+  color: #17251f;
+}
+
+.resultado-producto:hover {
+  color: #17251f;
+}
+
 .cantidad-input {
   width: 58px;
   min-height: 34px;
