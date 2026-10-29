@@ -14,12 +14,18 @@ import {
 } from "@/lib/api";
 import { cantidad as formatoCantidad, moneda } from "@/lib/formato";
 
-// La vista de stock puede nombrar el identificador de distintas maneras.
 type FilaStock = {
   producto_id?: string;
   id?: string;
   stock_actual?: number | string | null;
 };
+
+type FiltroStock = "todos" | "disponibles" | "bajo" | "agotados";
+type OrdenProductos =
+  | "nombre-asc"
+  | "nombre-desc"
+  | "precio-asc"
+  | "precio-desc";
 
 export default function ProductosPage() {
   const [productos, setProductos] = useState<ProductoCatalogo[]>([]);
@@ -32,14 +38,17 @@ export default function ProductosPage() {
   const [aviso, setAviso] = useState("");
   const [busqueda, setBusqueda] = useState("");
 
-  // null = formulario cerrado; "nuevo" = crear; un producto = editar.
-  const [editando, setEditando] = useState<ProductoCatalogo | "nuevo" | null>(
-    null
-  );
+  const [mostrarFiltros, setMostrarFiltros] = useState(false);
+  const [categoriaSeleccionada, setCategoriaSeleccionada] = useState("todas");
+  const [filtroStock, setFiltroStock] = useState<FiltroStock>("todos");
+  const [orden, setOrden] = useState<OrdenProductos>("nombre-asc");
+
+  const [editando, setEditando] = useState<
+    ProductoCatalogo | "nuevo" | null
+  >(null);
   const [codigoNuevo, setCodigoNuevo] = useState<string | undefined>();
 
   const [escaneando, setEscaneando] = useState(false);
-  // Código escaneado que no corresponde a ningún producto.
   const [codigoDesconocido, setCodigoDesconocido] = useState<string | null>(
     null
   );
@@ -51,7 +60,6 @@ export default function ProductosPage() {
           api<ProductoCatalogo[]>("/productos?activo=true", { signal }),
           api<Categoria[]>("/categorias", { signal }),
           api<{ datos: Unidad[] }>("/unidades", { signal }),
-          // Si el stock falla, igual mostramos el catálogo.
           api<{ productos: FilaStock[] }>("/inventario/stock?activo=true", {
             signal,
           }).catch((err: unknown) => {
@@ -71,8 +79,10 @@ export default function ProductosPage() {
           stock_minimo: Number(p.stock_minimo),
         }))
       );
+
       setCategorias(listaCategorias.filter((c) => c.activo));
       setUnidades(listaUnidades.datos ?? []);
+
       setStock(
         listaStock
           ? Object.fromEntries(
@@ -84,6 +94,7 @@ export default function ProductosPage() {
             )
           : null
       );
+
       setError("");
     } catch (err) {
       if (esAborto(err)) {
@@ -101,7 +112,6 @@ export default function ProductosPage() {
   useEffect(() => {
     const controlador = new AbortController();
 
-    // Carga inicial: el estado solo cambia cuando responde la API.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void cargar(controlador.signal);
 
@@ -116,17 +126,81 @@ export default function ProductosPage() {
   const resultados = useMemo(() => {
     const termino = busqueda.trim().toLowerCase();
 
-    if (!termino) {
-      return productos;
-    }
+    const filtrados = productos.filter((producto) => {
+      const coincideBusqueda =
+        !termino ||
+        producto.nombre.toLowerCase().includes(termino) ||
+        producto.codigo.toLowerCase().includes(termino) ||
+        (producto.codigo_barras ?? "").toLowerCase().includes(termino);
 
-    return productos.filter(
-      (p) =>
-        p.nombre.toLowerCase().includes(termino) ||
-        p.codigo.toLowerCase().includes(termino) ||
-        (p.codigo_barras ?? "").toLowerCase().includes(termino)
-    );
-  }, [productos, busqueda]);
+      const coincideCategoria =
+        categoriaSeleccionada === "todas" ||
+        producto.categoria_id === categoriaSeleccionada;
+
+      const existencias =
+        stock === null ? null : (stock[producto.id] ?? 0);
+
+      const stockMinimo = Number(producto.stock_minimo ?? 0);
+
+      let coincideStock = true;
+
+      if (filtroStock !== "todos") {
+        // No podemos determinar el estado si la API de stock falló.
+        if (existencias === null) {
+          coincideStock = false;
+        } else {
+          switch (filtroStock) {
+            case "disponibles":
+              coincideStock = existencias > 0 && existencias > stockMinimo;
+              break;
+
+            case "bajo":
+              coincideStock = existencias > 0 && existencias <= stockMinimo;
+              break;
+
+            case "agotados":
+              coincideStock = existencias <= 0;
+              break;
+          }
+        }
+      }
+
+      return coincideBusqueda && coincideCategoria && coincideStock;
+    });
+
+    return [...filtrados].sort((a, b) => {
+      switch (orden) {
+        case "nombre-desc":
+          return b.nombre.localeCompare(a.nombre, "es");
+
+        case "precio-asc":
+          return a.precio_venta - b.precio_venta;
+
+        case "precio-desc":
+          return b.precio_venta - a.precio_venta;
+
+        case "nombre-asc":
+        default:
+          return a.nombre.localeCompare(b.nombre, "es");
+      }
+    });
+  }, [
+    productos,
+    busqueda,
+    categoriaSeleccionada,
+    filtroStock,
+    orden,
+    stock,
+  ]);
+
+  const filtrosActivos =
+    categoriaSeleccionada !== "todas" || filtroStock !== "todos";
+
+  function limpiarFiltros() {
+    setCategoriaSeleccionada("todas");
+    setFiltroStock("todos");
+    setOrden("nombre-asc");
+  }
 
   function abrirNuevo(codigo?: string) {
     setAviso("");
@@ -236,12 +310,106 @@ export default function ProductosPage() {
             Escanear
           </button>
         </div>
+
+        <div className="fm-filtros-encabezado">
+          <button
+            type="button"
+            className="fm-btn fm-btn-claro"
+            onClick={() => setMostrarFiltros((actual) => !actual)}
+            aria-expanded={mostrarFiltros}
+            aria-controls="filtros-productos"
+          >
+            {mostrarFiltros ? "Ocultar filtros" : "Filtros"}
+            {filtrosActivos ? " •" : ""}
+          </button>
+
+          {filtrosActivos && (
+            <button
+              type="button"
+              className="fm-btn fm-btn-claro"
+              onClick={limpiarFiltros}
+            >
+              Limpiar filtros
+            </button>
+          )}
+
+          <span className="fm-filtros-conteo">
+            {resultados.length} de {productos.length} productos
+          </span>
+        </div>
+
+        {mostrarFiltros && (
+          <div id="filtros-productos" className="fm-filtros-panel">
+            <div className="fm-filtro-campo">
+              <label htmlFor="filtro-categoria" className="fm-etiqueta">
+                Categoría
+              </label>
+              <select
+                id="filtro-categoria"
+                value={categoriaSeleccionada}
+                onChange={(evento) =>
+                  setCategoriaSeleccionada(evento.target.value)
+                }
+              >
+                <option value="todas">Todas las categorías</option>
+                {categorias.map((categoria) => (
+                  <option key={categoria.id} value={categoria.id}>
+                    {categoria.nombre}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="fm-filtro-campo">
+              <label htmlFor="filtro-stock" className="fm-etiqueta">
+                Estado del inventario
+              </label>
+              <select
+                id="filtro-stock"
+                value={filtroStock}
+                onChange={(evento) =>
+                  setFiltroStock(evento.target.value as FiltroStock)
+                }
+              >
+                <option value="todos">Todos los estados</option>
+                <option value="disponibles">Stock disponible</option>
+                <option value="bajo">Stock bajo</option>
+                <option value="agotados">Agotados</option>
+              </select>
+
+              {stock === null && filtroStock !== "todos" && (
+                <small>
+                  No se pudo consultar el stock. Intenta recargar los datos.
+                </small>
+              )}
+            </div>
+
+            <div className="fm-filtro-campo">
+              <label htmlFor="orden-productos" className="fm-etiqueta">
+                Ordenar por
+              </label>
+              <select
+                id="orden-productos"
+                value={orden}
+                onChange={(evento) =>
+                  setOrden(evento.target.value as OrdenProductos)
+                }
+              >
+                <option value="nombre-asc">Nombre: A a Z</option>
+                <option value="nombre-desc">Nombre: Z a A</option>
+                <option value="precio-asc">Precio: menor a mayor</option>
+                <option value="precio-desc">Precio: mayor a menor</option>
+              </select>
+            </div>
+          </div>
+        )}
       </section>
 
       {codigoDesconocido && (
         <div className="fm-aviso fm-aviso-accion" role="status">
           <p>
-            No hay ningún producto con el código <strong>{codigoDesconocido}</strong>.
+            No hay ningún producto con el código{" "}
+            <strong>{codigoDesconocido}</strong>.
           </p>
           <div className="fm-aviso-botones">
             <button
@@ -291,14 +459,16 @@ export default function ProductosPage() {
           <section className="fm-lista" aria-label="Lista de productos">
             {resultados.length === 0 && !codigoDesconocido && (
               <p className="fm-vacio">
-                {busqueda.trim()
-                  ? "No se encontró ningún producto con esa búsqueda."
+                {busqueda.trim() || filtrosActivos
+                  ? "No hay productos que coincidan con la búsqueda y los filtros."
                   : "Aún no hay productos. Toca “Nuevo producto” para registrar el primero."}
               </p>
             )}
 
             {resultados.map((producto) => {
-              const existencias = stock ? (stock[producto.id] ?? 0) : null;
+              const existencias =
+                stock === null ? null : (stock[producto.id] ?? 0);
+
               const agotado = existencias !== null && existencias <= 0;
               const bajo =
                 existencias !== null &&
